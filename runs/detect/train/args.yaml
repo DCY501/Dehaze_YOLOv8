@@ -1,6 +1,6 @@
 task: detect
 mode: train
-model: yolov8n.pt
+model: ultralytics/models/v8/yolov8-dehaze.yaml
 data: datasets/VOC_hazy/VOC_hazy.yaml
 epochs: 1
 patience: 50
@@ -9,12 +9,12 @@ imgsz: 640
 save: true
 save_period: -1
 cache: false
-device: 0
+device: '0'
 workers: 0
 project: null
 name: null
-exist_ok: false
-pretrained: false
+exist_ok: true
+pretrained: yolov8n.pt
 optimizer: SGD
 verbose: true
 seed: 0
@@ -73,6 +73,7 @@ warmup_bias_lr: 0.1
 box: 7.5
 cls: 0.5
 dfl: 1.5
+dehaze: 0.05
 fl_gamma: 0.0
 label_smoothing: 0.0
 nbs: 64
@@ -92,4 +93,4 @@ copy_paste: 0.0
 cfg: null
 v5loader: false
 tracker: botsort.yaml
-save_dir: runs\detect\train
+save_dir: runs/detect/train
