@@ -131,6 +131,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# IDE / local environment
+.vscode/
+.idea/
+*.cache
+
 # datasets and projects
 datasets/
 runs/

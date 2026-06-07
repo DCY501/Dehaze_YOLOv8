@@ -209,9 +209,21 @@ def yaml_save(file='data.yaml', data=None):
         # Create parent directories if they don't exist
         file.parent.mkdir(parents=True, exist_ok=True)
 
+    def _relative(v):
+        """Convert absolute paths under cwd to relative paths."""
+        if not isinstance(v, (str, Path)):
+            return v
+        try:
+            p = Path(v)
+            if p.is_absolute():
+                return str(p.relative_to(Path.cwd())).replace('\\', '/')
+        except Exception:
+            pass
+        return v
+
     with open(file, 'w') as f:
         # Dump data to file in YAML format, converting Path objects to strings
-        yaml.safe_dump({k: str(v) if isinstance(v, Path) else v
+        yaml.safe_dump({k: _relative(str(v) if isinstance(v, Path) else v)
                         for k, v in data.items()},
                        f,
                        sort_keys=False,
