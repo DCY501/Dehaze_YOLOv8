@@ -57,6 +57,11 @@ def train_baseline(args):
     print(f"    预训练: {args.pretrained}\n")
 
     model = YOLO(args.model)
+    # 修复：从 YAML 创建模型时，pretrained 参数不会被自动使用，
+    # 必须显式调用 model.load() 才能加载预训练权重。
+    if args.pretrained and str(args.pretrained).lower() not in ('false', 'none', '0', ''):
+        print(f">>> 正在加载预训练权重: {args.pretrained}")
+        model.load(args.pretrained)
     model.train(
         data=args.data,
         epochs=args.epochs,
@@ -68,6 +73,9 @@ def train_baseline(args):
         exist_ok=True,
         project=args.project,
         name=args.name,
+        resume=args.resume,
+        cache=args.cache,
+        save_period=args.save_period,
     )
     print(f"\n>>> 基线训练完成，结果保存在: {args.project}/{args.name}")
 
@@ -102,6 +110,9 @@ def train_dehaze(args):
         exist_ok=True,
         project=args.project,
         name=args.name,
+        resume=args.resume,
+        cache=args.cache,
+        save_period=args.save_period,
     )
     print(f"\n>>> 多任务训练完成，结果保存在: {args.project}/{args.name}")
 
@@ -203,6 +214,12 @@ def parse_args():
                         help="可视化样本数量 (默认: 12)")
     parser.add_argument("--out-dir", default="runs/dehaze_vis/train6",
                         help="可视化输出目录 (默认: runs/dehaze_vis/train6)")
+    parser.add_argument("--resume", action="store_true",
+                        help="从上次中断的 checkpoint 恢复训练 (last.pt)")
+    parser.add_argument("--cache", default=False, nargs="?", const=True,
+                        help="缓存图片到内存(True)或硬盘('disk')，默认不缓存")
+    parser.add_argument("--save-period", type=int, default=-1,
+                        help="每隔 N 个 epoch 保存一次 checkpoint (-1=只保存 last/best，默认)")
 
     args = parser.parse_args()
 
@@ -222,9 +239,23 @@ def main():
     args = parse_args()
     check_cuda()
 
+    # 断点恢复: 自动定位 last.pt
+    if args.resume:
+        if args.name is None:
+            print("错误: 恢复训练时必须指定 --name，例如: --name baseline_5beta_subset30_50e")
+            sys.exit(1)
+        last_pt = Path(args.project) / args.name / "weights" / "last.pt"
+        if not last_pt.exists():
+            print(f"错误: 找不到 checkpoint: {last_pt}")
+            print("可能原因: 训练尚未完成过至少 1 个完整 epoch，last.pt 还未生成。")
+            print("请确认 --name 和 --project 是否正确，或该实验是否已跑完 1 个 epoch 以上。")
+            sys.exit(1)
+        print(f">>> 断点恢复模式: 从 {last_pt} 继续训练")
+        args.model = str(last_pt)
+
     if args.mode == "baseline":
         # 基线模式默认用原始 yolov8n.pt，而非 dehaze yaml
-        if args.model == "ultralytics/models/v8/yolov8-dehaze.yaml":
+        if not args.resume and args.model == "ultralytics/models/v8/yolov8-dehaze.yaml":
             print("提示: 基线训练自动切换为原始 yolov8n.yaml")
             args.model = "ultralytics/models/v8/yolov8.yaml"
         train_baseline(args)
