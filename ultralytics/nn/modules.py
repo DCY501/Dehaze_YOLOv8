@@ -379,13 +379,73 @@ class Ensemble(nn.ModuleList):
 
 
 ######################"""本段为方案二的修改框架
-#第一版 DehazeHead
+# 第一版 DehazeHead（带物理重构输出：J, t, A）
 class DehazeHead(nn.Module):
-    # Lightweight dehazing auxiliary head. It upsamples P3 features to an RGB image.
+    # Lightweight dehazing auxiliary head with physical scattering model outputs.
+    # Returns: (dehazed image J, transmission map t, atmospheric light A)
     def __init__(self, c1, c2=3):
         super().__init__()
         c_mid = max(c1 // 2, 16)
-        self.net = nn.Sequential(
+        
+        # 共享特征提取
+        self.feat = nn.Sequential(
+            Conv(c1, c_mid, 3, 1),
+            Conv(c_mid, c_mid, 3, 1),
+        )
+        
+        # 去雾图 J
+        self.j = nn.Sequential(
+            Conv(c_mid, c_mid, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(c_mid, c_mid // 2, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(c_mid // 2, c_mid // 4, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(c_mid // 4, c2, 1),
+            nn.Sigmoid()  # 输出范围 [0, 1]
+        )
+        
+        # 透射图 t，上采样到输入分辨率，范围 [0, 1]
+        self.t = nn.Sequential(
+            Conv(c_mid, c_mid // 2, 3, 1),
+            nn.Conv2d(c_mid // 2, 1, 1),
+            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False),
+            nn.Sigmoid()
+        )
+        
+        # 全局大气光 A，范围 [0, 1]
+        self.a = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c_mid, 1, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        feat = self.feat(x)
+        j = self.j(feat)
+        t = self.t(feat)
+        a = self.a(feat)
+        return j, t, a
+
+
+class DehazeFeatureFuse(nn.Module):
+    # Lightweight P3 dehazing feature branch. Returns fused P3 plus an RGB auxiliary dehaze image.
+    # Also predicts physical scattering model: transmission map t and atmospheric light A.
+    def __init__(self, c1, c2=3, fuse=True, alpha=0.1):
+        super().__init__()
+        c_mid = max(c1 // 2, 16)
+        self.fuse = fuse
+        self.register_buffer('alpha', torch.tensor(float(alpha)))
+        self.feat = nn.Sequential(
+            DWConv(c1, c1, 3, 1),
+            Conv(c1, c1, 1, 1))
+        nn.init.zeros_(self.feat[-1].bn.weight)
+        nn.init.zeros_(self.feat[-1].bn.bias)
+        self.gate = nn.Sequential(
+            nn.Conv2d(c1, c1, 1),
+            nn.Sigmoid())
+        # 去雾图 J
+        self.img = nn.Sequential(
             Conv(c1, c_mid, 3, 1),
             nn.Upsample(scale_factor=2, mode='nearest'),
             Conv(c_mid, c_mid // 2, 3, 1),
@@ -393,11 +453,26 @@ class DehazeHead(nn.Module):
             Conv(c_mid // 2, c_mid // 4, 3, 1),
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(c_mid // 4, c2, 1),
-            nn.Sigmoid() #这里的 Sigmoid() 是为了让输出图像范围在 [0, 1]，后面算 L1/MSE 去雾损失会比较方便
-        )
+            nn.Sigmoid())
+        # 透射图 t，上采样到输入分辨率
+        self.trans = nn.Sequential(
+            Conv(c1, c_mid // 2, 3, 1),
+            nn.Conv2d(c_mid // 2, 1, 1),
+            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False),
+            nn.Sigmoid())
+        # 全局大气光 A
+        self.atmos = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, 1, 1),
+            nn.Sigmoid())
 
     def forward(self, x):
-        return self.net(x)
+        dehaze_feat = self.feat(x)
+        fused = x + self.alpha * self.gate(dehaze_feat) * dehaze_feat if self.fuse else x
+        j = self.img(dehaze_feat)
+        t = self.trans(dehaze_feat)
+        a = self.atmos(dehaze_feat)
+        return fused, j, t, a
 
 ######################"""
 

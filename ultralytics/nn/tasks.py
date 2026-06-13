@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 
 from ultralytics.nn.modules import (C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x, Classify,
-                                    Concat, Conv, ConvTranspose, DehazeHead, Detect, DWConv, DWConvTranspose2d, Ensemble, Focus,
-                                    GhostBottleneck, GhostConv, Segment)
+                                    Concat, Conv, ConvTranspose, DehazeFeatureFuse, DehazeHead, Detect, DWConv, DWConvTranspose2d,
+                                    Ensemble, Focus, GhostBottleneck, GhostConv, Segment)
 from ultralytics.yolo.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.yolo.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.yolo.utils.torch_utils import (fuse_conv_and_bn, fuse_deconv_and_bn, initialize_weights,
@@ -55,9 +55,17 @@ class BaseModel(nn.Module):
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
+            x_in = x  # keep input for layers that do not propagate their tuple output
             x = m(x)  # run
-            if isinstance(m, DehazeHead):
-                dehaze = x
+            if isinstance(x, tuple) and torch.is_tensor(x[0]) and x[0].ndim == 4:
+                if isinstance(m, DehazeFeatureFuse):
+                    # x is (fused_feat, j, t, a)
+                    x, *dehaze = x
+                    dehaze = tuple(dehaze)
+                elif isinstance(m, DehazeHead):
+                    # x is (j, t, a); restore original feature for downstream layers
+                    dehaze = x
+                    x = x_in
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 LOGGER.info('visualize feature not yet supported')
@@ -473,6 +481,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         if m is DehazeHead:
             c1, c2 = ch[f], args[0]
             args = [c1, c2, *args[1:]]
+        elif m is DehazeFeatureFuse:
+            c1, c2 = ch[f], ch[f]
+            args = [c1, *args]
         elif m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, Focus,
                  BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x):
             c1, c2 = ch[f], args[0]

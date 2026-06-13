@@ -158,8 +158,11 @@ class Loss:
 
     def __call__(self, preds, batch):
         dehaze_pred = None
-        if (isinstance(preds, tuple) and len(preds) == 2 and torch.is_tensor(preds[1]) and preds[1].ndim == 4):
-            preds, dehaze_pred = preds
+        if isinstance(preds, tuple) and len(preds) == 2:
+            if (torch.is_tensor(preds[1]) and preds[1].ndim == 4):
+                preds, dehaze_pred = preds  # legacy V2: dehaze_pred is j
+            elif isinstance(preds[1], tuple):
+                preds, dehaze_pred = preds  # new: dehaze_pred is (j, t, a)
 
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl, dehaze
         feats = preds[1] if isinstance(preds, tuple) else preds
@@ -203,10 +206,28 @@ class Loss:
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
         if dehaze_pred is not None and 'clean_img' in batch:
-            clean_img = batch['clean_img'].to(self.device, non_blocking=True).type_as(dehaze_pred)
-            if dehaze_pred.shape[-2:] != clean_img.shape[-2:]:
-                dehaze_pred = F.interpolate(dehaze_pred, size=clean_img.shape[-2:], mode='bilinear', align_corners=False)
-            loss[3] = F.l1_loss(dehaze_pred, clean_img) * getattr(self.hyp, 'dehaze', 0.05)
+            clean_img = batch['clean_img'].to(self.device, non_blocking=True).type_as(
+                dehaze_pred[0] if isinstance(dehaze_pred, tuple) else dehaze_pred)
+            hazy_img = batch['img'].to(self.device, non_blocking=True).type_as(clean_img)
+            if isinstance(dehaze_pred, tuple):
+                j, t, a = dehaze_pred
+                # Align spatial size to clean image
+                if j.shape[-2:] != clean_img.shape[-2:]:
+                    size = clean_img.shape[-2:]
+                    j = F.interpolate(j, size=size, mode='bilinear', align_corners=False)
+                    t = F.interpolate(t, size=size, mode='bilinear', align_corners=False)
+                if hazy_img.shape[-2:] != clean_img.shape[-2:]:
+                    hazy_img = F.interpolate(hazy_img, size=clean_img.shape[-2:], mode='bilinear', align_corners=False)
+                # Physical reconstruction: I = J * t + A * (1 - t)
+                recon = j * t + a * (1.0 - t)
+                recon = torch.clamp(recon, 0.0, 1.0)
+                loss_j = F.l1_loss(j, clean_img)
+                loss_recon = F.l1_loss(recon, hazy_img)
+                loss[3] = (loss_j + loss_recon) * getattr(self.hyp, 'dehaze', 0.05)
+            else:
+                if dehaze_pred.shape[-2:] != clean_img.shape[-2:]:
+                    dehaze_pred = F.interpolate(dehaze_pred, size=clean_img.shape[-2:], mode='bilinear', align_corners=False)
+                loss[3] = F.l1_loss(dehaze_pred, clean_img) * getattr(self.hyp, 'dehaze', 0.05)
 
         return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl, dehaze)
 
