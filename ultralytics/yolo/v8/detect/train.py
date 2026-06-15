@@ -221,9 +221,10 @@ class Loss:
                 # Physical reconstruction: I = J * t + A * (1 - t)
                 recon = j * t + a * (1.0 - t)
                 recon = torch.clamp(recon, 0.0, 1.0)
-                loss_j = F.l1_loss(j, clean_img)
+                # 仅保留物理重构 loss：避免直接去雾分支拟合清晰图，
+                # 让网络通过重构有雾图 I = J*t + A*(1-t) 学习检测友好的去雾特征。
                 loss_recon = F.l1_loss(recon, hazy_img)
-                loss[3] = (loss_j + loss_recon) * getattr(self.hyp, 'dehaze', 0.05)
+                loss[3] = loss_recon * getattr(self.hyp, 'dehaze', 0.05)
             else:
                 if dehaze_pred.shape[-2:] != clean_img.shape[-2:]:
                     dehaze_pred = F.interpolate(dehaze_pred, size=clean_img.shape[-2:], mode='bilinear', align_corners=False)

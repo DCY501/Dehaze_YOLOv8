@@ -8,9 +8,9 @@ import thop
 import torch
 import torch.nn as nn
 
-from ultralytics.nn.modules import (C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x, Classify,
+from ultralytics.nn.modules import (AFFM, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x, Classify,
                                     Concat, Conv, ConvTranspose, DehazeFeatureFuse, DehazeHead, Detect, DWConv, DWConvTranspose2d,
-                                    Ensemble, Focus, GhostBottleneck, GhostConv, Segment)
+                                    Ensemble, Focus, GhostBottleneck, GhostConv, RSM, Segment)
 from ultralytics.yolo.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.yolo.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.yolo.utils.torch_utils import (fuse_conv_and_bn, fuse_deconv_and_bn, initialize_weights,
@@ -62,6 +62,10 @@ class BaseModel(nn.Module):
                     # x is (fused_feat, j, t, a)
                     x, *dehaze = x
                     dehaze = tuple(dehaze)
+                elif isinstance(m, RSM):
+                    # x is (j, t, a); keep j as placeholder, dehaze is used in loss
+                    dehaze = x
+                    x = x[0]
                 elif isinstance(m, DehazeHead):
                     # x is (j, t, a); restore original feature for downstream layers
                     dehaze = x
@@ -484,6 +488,13 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is DehazeFeatureFuse:
             c1, c2 = ch[f], ch[f]
             args = [c1, *args]
+        elif m is AFFM:
+            c2 = args[1]  # output channel equals neck channel
+        elif m is RSM:
+            c3, c4, c5 = ch[f[0]], ch[f[1]], ch[f[2]]
+            c_out = args[0] if args else 3
+            args = [c3, c4, c5, c_out]
+            c2 = c_out  # output channel is RGB
         elif m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, Focus,
                  BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x):
             c1, c2 = ch[f], args[0]

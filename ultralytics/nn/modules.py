@@ -7,6 +7,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ultralytics.yolo.utils.tal import dist2bbox, make_anchors
 
@@ -473,6 +474,74 @@ class DehazeFeatureFuse(nn.Module):
         t = self.trans(dehaze_feat)
         a = self.atmos(dehaze_feat)
         return fused, j, t, a
+
+
+class AFFM(nn.Module):
+    # Adaptive Feature Fusion Module: adaptively fuse neck and backbone features of the same scale.
+    # Uses a residual connection so that the initial output equals the neck feature.
+    def __init__(self, c_backbone, c_neck):
+        super().__init__()
+        self.conv_b = Conv(c_backbone, c_neck, 1, 1)  # project backbone feature to neck channels
+        self.att = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c_neck * 2, 2, 1, bias=False),
+            nn.Softmax(dim=1))
+        self.fuse = Conv(c_neck, c_neck, 3, 1)
+        # Initialize fuse branch to zero -> initial output equals x_neck
+        nn.init.zeros_(self.fuse.bn.weight)
+        nn.init.zeros_(self.fuse.bn.bias)
+
+    def forward(self, x):
+        x_neck, x_backbone = x
+        x_b = self.conv_b(x_backbone)
+        x_cat = torch.cat([x_neck, x_b], dim=1)
+        w = self.att(x_cat)  # [B, 2, 1, 1]
+        fused = w[:, 0:1] * x_neck + w[:, 1:2] * x_b
+        return x_neck + self.fuse(fused)
+
+
+class RSM(nn.Module):
+    # Restoration Subnet Module: multi-scale feature to J, t, A.
+    def __init__(self, c3=64, c4=128, c5=256, c_out=3):
+        super().__init__()
+        self.conv4 = Conv(c4, c3, 1, 1)
+        self.conv5 = Conv(c5, c3, 1, 1)
+        self.fuse = Conv(c3 * 3, c3, 1, 1)
+
+        # Image Restoration decoder: outputs J (dehazed image)
+        self.ir = nn.Sequential(
+            Conv(c3, c3, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(c3, c3 // 2, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(c3 // 2, c3 // 4, 3, 1),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(c3 // 4, c_out, 1),
+            nn.Sigmoid())
+
+        # Transmission Map decoder
+        self.tm = nn.Sequential(
+            Conv(c3, c3 // 2, 3, 1),
+            nn.Conv2d(c3 // 2, 1, 1),
+            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=False),
+            nn.Sigmoid())
+
+        # Global Atmospheric Light decoder
+        self.gal = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c3, 1, 1),
+            nn.Sigmoid())
+
+    def forward(self, x):
+        f3, f4, f5 = x
+        f4_up = F.interpolate(self.conv4(f4), size=f3.shape[2:], mode='nearest')
+        f5_up = F.interpolate(self.conv5(f5), size=f3.shape[2:], mode='nearest')
+        fused = self.fuse(torch.cat([f3, f4_up, f5_up], dim=1))
+        j = self.ir(fused)
+        t = self.tm(fused)
+        t = F.interpolate(t, size=j.shape[2:], mode='bilinear', align_corners=False)
+        a = self.gal(fused)
+        return j, t, a
 
 ######################"""
 

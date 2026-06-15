@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import torch
+import yaml
 
 # 将项目根目录加入路径，确保能导入本地 ultralytics
 ROOT = Path(__file__).resolve().parent.parent
@@ -239,12 +240,14 @@ def main():
     args = parse_args()
     check_cuda()
 
-    # 断点恢复: 自动定位 last.pt
+    # 断点恢复: 自动定位 last.pt，并从 args.yaml 恢复原始训练配置
     if args.resume:
         if args.name is None:
             print("错误: 恢复训练时必须指定 --name，例如: --name baseline_5beta_subset30_50e")
             sys.exit(1)
-        last_pt = Path(args.project) / args.name / "weights" / "last.pt"
+        run_dir = Path(args.project) / args.name
+        last_pt = run_dir / "weights" / "last.pt"
+        args_yaml = run_dir / "args.yaml"
         if not last_pt.exists():
             print(f"错误: 找不到 checkpoint: {last_pt}")
             print("可能原因: 训练尚未完成过至少 1 个完整 epoch，last.pt 还未生成。")
@@ -252,6 +255,33 @@ def main():
             sys.exit(1)
         print(f">>> 断点恢复模式: 从 {last_pt} 继续训练")
         args.model = str(last_pt)
+
+        # 从 args.yaml 恢复原始训练配置，避免使用脚本默认值覆盖
+        if args_yaml.exists():
+            print(f">>> 读取原始训练配置: {args_yaml}")
+            with open(args_yaml, "r", encoding="utf-8") as f:
+                saved_args = yaml.safe_load(f) or {}
+            # 关键参数：恢复训练必须保持一致
+            restore_map = {
+                "data": "data",
+                "epochs": "epochs",
+                "batch": "batch",
+                "imgsz": "imgsz",
+                "workers": "workers",
+                "pretrained": "pretrained",
+                "dehaze": "dehaze",
+                "cache": "cache",
+                "save_period": "save_period",
+            }
+            for saved_key, arg_key in restore_map.items():
+                if saved_key in saved_args:
+                    old_val = getattr(args, arg_key)
+                    new_val = saved_args[saved_key]
+                    setattr(args, arg_key, new_val)
+                    if old_val != new_val:
+                        print(f"    恢复 {arg_key}: {old_val} -> {new_val}")
+        else:
+            print(f"警告: 找不到 {args_yaml}，将使用当前命令行参数继续训练")
 
     if args.mode == "baseline":
         # 基线模式默认用原始 yolov8n.pt，而非 dehaze yaml
