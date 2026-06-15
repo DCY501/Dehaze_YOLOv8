@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from ultralytics.nn.modules import (AFFM, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x, Classify,
                                     Concat, Conv, ConvTranspose, DehazeFeatureFuse, DehazeHead, Detect, DWConv, DWConvTranspose2d,
-                                    Ensemble, Focus, GhostBottleneck, GhostConv, RSM, Segment)
+                                    Ensemble, Focus, GhostBottleneck, GhostConv, RRAM, RSM, Segment)
 from ultralytics.yolo.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.yolo.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.yolo.utils.torch_utils import (fuse_conv_and_bn, fuse_deconv_and_bn, initialize_weights,
@@ -52,7 +52,14 @@ class BaseModel(nn.Module):
         y, dt, dehaze = [], [], None  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+                if isinstance(m.f, int):
+                    x = y[m.f]
+                else:
+                    x_new = []
+                    for j in m.f:
+                        v = x if j == -1 else y[j]
+                        x_new.extend(v) if isinstance(v, list) else x_new.append(v)
+                    x = x_new  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
             x_in = x  # keep input for layers that do not propagate their tuple output
@@ -495,6 +502,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c_out = args[0] if args else 3
             args = [c3, c4, c5, c_out]
             c2 = c_out  # output channel is RGB
+        elif m is RRAM:
+            c3, c4, c5 = ch[f[0]], ch[f[1]], ch[f[2]]
+            args = [c3, c4, c5]
+            c2 = [c3, c4, c5]  # output is a list of three enhanced features
         elif m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, Focus,
                  BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x):
             c1, c2 = ch[f], args[0]
@@ -510,7 +521,13 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
         elif m in (Detect, Segment):
-            args.append([ch[x] for x in f])
+            ch_list = []
+            for x in f:
+                if isinstance(ch[x], list):
+                    ch_list.extend(ch[x])
+                else:
+                    ch_list.append(ch[x])
+            args.append(ch_list)
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
         else:

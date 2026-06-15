@@ -543,6 +543,53 @@ class RSM(nn.Module):
         a = self.gal(fused)
         return j, t, a
 
+
+class RRAM(nn.Module):
+    # Relation Reasoning Attention Module: cross-scale relation reasoning for detection.
+    def __init__(self, c3=64, c4=128, c5=256):
+        super().__init__()
+        # Project other scales to current scale channels
+        self.p4_to_p3 = Conv(c4, c3, 1, 1)
+        self.p5_to_p3 = Conv(c5, c3, 1, 1)
+        self.p3_to_p4 = Conv(c3, c4, 3, 2)
+        self.p5_to_p4 = Conv(c5, c4, 1, 1)
+        self.p3_to_p5 = nn.Sequential(Conv(c3, c4, 3, 2), Conv(c4, c5, 3, 2))
+        self.p4_to_p5 = Conv(c4, c5, 3, 2)
+
+        # Spatial attention: [current, from_lower, from_higher] -> attention mask
+        self.att3 = nn.Sequential(Conv(c3 * 3, c3, 1), nn.Sigmoid())
+        self.att4 = nn.Sequential(Conv(c4 * 3, c4, 1), nn.Sigmoid())
+        self.att5 = nn.Sequential(Conv(c5 * 3, c5, 1), nn.Sigmoid())
+
+        # Residual refinement
+        self.refine3 = Conv(c3, c3, 3, 1)
+        self.refine4 = Conv(c4, c4, 3, 1)
+        self.refine5 = Conv(c5, c5, 3, 1)
+
+    def forward(self, x):
+        p3, p4, p5 = x
+        # Cross-scale contexts
+        p3_ctx = torch.cat([
+            p3,
+            F.interpolate(self.p4_to_p3(p4), size=p3.shape[2:], mode='nearest'),
+            F.interpolate(self.p5_to_p3(p5), size=p3.shape[2:], mode='nearest')
+        ], dim=1)
+        p4_ctx = torch.cat([
+            self.p3_to_p4(p3),
+            p4,
+            F.interpolate(self.p5_to_p4(p5), size=p4.shape[2:], mode='nearest')
+        ], dim=1)
+        p5_ctx = torch.cat([
+            self.p3_to_p5(p3),
+            self.p4_to_p5(p4),
+            p5
+        ], dim=1)
+        # Attention-enhanced features with residual
+        p3_out = p3 + self.refine3(p3 * self.att3(p3_ctx))
+        p4_out = p4 + self.refine4(p4 * self.att4(p4_ctx))
+        p5_out = p5 + self.refine5(p5 * self.att5(p5_ctx))
+        return [p3_out, p4_out, p5_out]
+
 ######################"""
 
 
